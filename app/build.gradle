@@ -10,17 +10,33 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId "kittoku.osc"
+        applicationId "kittoku.osc.gate"
         minSdk 23
         targetSdk 36
-        versionCode 50
-        versionName "1.10.3"
+        versionCode 51
+        versionName "1.10.3-gate.1"
+
+        // where the app pulls the refreshed VPN Gate list from (owner/repo, set by Actions)
+        buildConfigField "String", "SERVER_REPO", "\"${System.getenv("GITHUB_REPOSITORY") ?: ""}\""
 
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
+    signingConfigs {
+        release {
+            def store = System.getenv("SIGN_STORE")
+            if (store != null) {
+                storeFile file(store)
+                storePassword System.getenv("SIGN_STORE_PASS")
+                keyAlias System.getenv("SIGN_KEY_ALIAS")
+                keyPassword System.getenv("SIGN_KEY_PASS")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig System.getenv("SIGN_STORE") != null ? signingConfigs.release : signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -48,6 +64,9 @@ dependencies {
     implementation "androidx.preference:preference-ktx:1.2.1"
     implementation 'com.google.android.material:material:1.13.0'
     implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0"
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.9.2'
+
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.3.0'

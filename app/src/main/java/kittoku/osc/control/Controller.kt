@@ -30,6 +30,7 @@ import kittoku.osc.terminal.SSL_REQUEST_INTERVAL
 import kittoku.osc.unit.sstp.SSTP_MESSAGE_TYPE_CALL_ABORT
 import kittoku.osc.unit.sstp.SSTP_MESSAGE_TYPE_CALL_DISCONNECT
 import kittoku.osc.unit.sstp.SSTP_MESSAGE_TYPE_CALL_DISCONNECT_ACK
+import kittoku.osc.vpngate.VgRotation
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -62,7 +63,7 @@ internal class Controller(internal val bridge: SharedBridge) {
 
     private fun attachHandler() {
         bridge.handler = CoroutineExceptionHandler { _, throwable ->
-            kill(isReconnectionEnabled) {
+            kill(isReconnectionEnabled, isFailure = true) {
                 val header = "OSC: ERR_UNEXPECTED"
                 bridge.service.logWriter?.report(header + "\n" + throwable.stackTraceToString())
                 bridge.service.notifyError(header)
@@ -234,7 +235,7 @@ internal class Controller(internal val bridge: SharedBridge) {
             SSTP_MESSAGE_TYPE_CALL_ABORT
         }
 
-        kill(isReconnectionEnabled) {
+        kill(isReconnectionEnabled, isFailure = received.result != Result.ERR_DISCONNECT_REQUESTED) {
             sstpClient?.sendLastPacket(lastPacketType)
 
             val header = "${received.from.name}: ${received.result.name}"
@@ -256,7 +257,11 @@ internal class Controller(internal val bridge: SharedBridge) {
         }
     }
 
-    internal fun kill(isReconnectionRequested: Boolean, cleanup: (suspend () -> Unit)?) {
+    internal fun kill(
+        isReconnectionRequested: Boolean,
+        isFailure: Boolean = false,
+        cleanup: (suspend () -> Unit)?,
+    ) {
         if (!mutex.tryLock()) return
 
         bridge.service.scope.launch {
@@ -271,6 +276,9 @@ internal class Controller(internal val bridge: SharedBridge) {
 
             if (isReconnectionRequested && isReconnectionAvailable) {
                 bridge.service.launchJobReconnect()
+            } else if (isFailure && VgRotation.advance(bridge.prefs) != null) {
+                // this VPN Gate server is dead or blocked, hop to the next tested one
+                bridge.service.launchJobRotate()
             } else {
                 bridge.service.close()
             }

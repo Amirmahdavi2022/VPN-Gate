@@ -29,6 +29,7 @@ import kittoku.osc.extension.firstEditText
 import kittoku.osc.extension.sum
 import kittoku.osc.fragment.HomeFragment
 import kittoku.osc.fragment.SettingFragment
+import kittoku.osc.fragment.VpnGateFragment
 import kittoku.osc.preference.OscPrefKey
 import kittoku.osc.preference.PROFILE_KEY_HEADER
 import kittoku.osc.preference.accessor.getStringPrefValue
@@ -118,24 +119,27 @@ class MainActivity : AppCompatActivity() {
         settingFragment = SettingFragment()
 
         object : FragmentStateAdapter(this) {
-            override fun getItemCount() = 2
+            override fun getItemCount() = 3
 
             override fun createFragment(position: Int): Fragment {
                 return when (position) {
-                    0 -> homeFragment
-                    1 -> settingFragment
+                    0 -> VpnGateFragment()
+                    1 -> homeFragment
+                    2 -> settingFragment
                     else -> throw NotImplementedError(position.toString())
                 }
             }
         }.also {
             binding.pager.adapter = it
+            binding.pager.offscreenPageLimit = 2
         }
 
 
         TabLayoutMediator(binding.tabBar, binding.pager) { tab, position ->
             tab.text = when (position) {
-                0 -> "HOME"
-                1 -> "SETTING"
+                0 -> "SERVERS"
+                1 -> "HOME"
+                2 -> "SETTING"
                 else -> throw NotImplementedError(position.toString())
             }
         }.attach()

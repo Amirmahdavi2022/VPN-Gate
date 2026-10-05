@@ -24,6 +24,7 @@ import kittoku.osc.control.LogWriter
 import kittoku.osc.preference.OscPrefKey
 import kittoku.osc.preference.accessor.getBooleanPrefValue
 import kittoku.osc.preference.accessor.getIntPrefValue
+import kittoku.osc.preference.accessor.getStringPrefValue
 import kittoku.osc.preference.accessor.getURIPrefValue
 import kittoku.osc.preference.accessor.resetReconnectionLife
 import kittoku.osc.preference.accessor.setBooleanPrefValue
@@ -102,7 +103,7 @@ internal class SstpVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return when (intent?.action) {
             ACTION_VPN_CONNECT -> {
-                controller?.kill(false, null)
+                controller?.kill(false, cleanup = null)
 
                 beForegrounded()
                 resetReconnectionLife(prefs)
@@ -192,6 +193,25 @@ internal class SstpVpnService : VpnService() {
         }
     }
 
+    internal fun launchJobRotate() {
+        jobReconnect = scope.launch {
+            try {
+                val host = getStringPrefValue(OscPrefKey.HOME_HOSTNAME, prefs)
+                val message = "Server didn't work, switching to $host"
+                notifyMessage(message, NOTIFICATION_RECONNECT_ID, NOTIFICATION_RECONNECT_CHANNEL)
+                logWriter?.report(message)
+
+                resetReconnectionLife(prefs)
+                delay(1_500)
+
+                initializeClient()
+            } catch (_: CancellationException) { }
+            finally {
+                cancelNotification(NOTIFICATION_RECONNECT_ID)
+            }
+        }
+    }
+
     private fun beForegrounded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             arrayOf(
@@ -263,7 +283,7 @@ internal class SstpVpnService : VpnService() {
         logWriter?.close()
         logWriter = null
 
-        controller?.kill(false, null)
+        controller?.kill(false, cleanup = null)
         controller = null
 
         scope.cancel()

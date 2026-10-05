@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="vg_ok">#FF66BB6A</color>
+    <color name="vg_mid">#FFFFB74D</color>
+    <color name="vg_bad">#FF8E8E8E</color>
+    <color name="vg_card">#FF1E2321</color>
+    <color name="vg_channel">#FF16222E</color>
+    <color name="vg_channel_text">#FF64B5F6</color>
+</resources>
