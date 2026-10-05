@@ -24,19 +24,26 @@ android {
 
     signingConfigs {
         release {
+            // private key from Actions secrets if set, otherwise the shared key in the repo
+            // (fixed key = each new APK installs as an update over the previous one)
             def store = System.getenv("SIGN_STORE")
             if (store != null) {
                 storeFile file(store)
                 storePassword System.getenv("SIGN_STORE_PASS")
                 keyAlias System.getenv("SIGN_KEY_ALIAS")
                 keyPassword System.getenv("SIGN_KEY_PASS")
+            } else {
+                storeFile file("gate-shared.jks")
+                storePassword "android"
+                keyAlias "gate"
+                keyPassword "android"
             }
         }
     }
 
     buildTypes {
         release {
-            signingConfig System.getenv("SIGN_STORE") != null ? signingConfigs.release : signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
