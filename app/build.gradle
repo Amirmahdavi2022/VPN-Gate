@@ -13,8 +13,8 @@ android {
         applicationId "kittoku.osc.gate"
         minSdk 23
         targetSdk 36
-        versionCode 51
-        versionName "1.10.3-gate.1"
+        versionCode 52
+        versionName "1.10.3-gate.2"
 
         // where the app pulls the refreshed VPN Gate list from (owner/repo, set by Actions)
         buildConfigField "String", "SERVER_REPO", "\"${System.getenv("GITHUB_REPOSITORY") ?: ""}\""

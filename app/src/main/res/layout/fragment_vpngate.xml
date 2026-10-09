@@ -5,11 +5,40 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <com.google.android.material.button.MaterialButtonToggleGroup
+        android:id="@+id/vgMode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="12dp"
+        app:checkedButton="@+id/vgModeGate"
+        app:selectionRequired="true"
+        app:singleSelection="true">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/vgModeGate"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="VPN Gate"
+            android:textAllCaps="false" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/vgModeAccount"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="My account"
+            android:textAllCaps="false" />
+    </com.google.android.material.button.MaterialButtonToggleGroup>
+
     <com.google.android.material.card.MaterialCardView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginHorizontal="16dp"
-        android:layout_marginTop="16dp"
+        android:layout_marginTop="10dp"
         app:cardBackgroundColor="@color/vg_card"
         app:cardCornerRadius="20dp"
         app:cardElevation="0dp"
@@ -81,6 +110,16 @@
                     android:layout_weight="1"
                     android:textColor="?android:attr/textColorSecondary"
                     android:textSize="12sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/vgPaste"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:stateListAnimator="@animator/press_scale"
+                    android:text="Paste"
+                    android:textAllCaps="false"
+                    android:visibility="gone" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/vgRefresh"

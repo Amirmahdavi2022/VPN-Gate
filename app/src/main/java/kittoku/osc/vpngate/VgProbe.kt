@@ -29,29 +29,47 @@ internal object VgProbe {
     private const val CONNECT_TIMEOUT = 5_000
     private const val READ_TIMEOUT = 6_000
 
-    fun probe(s: VgServer): ProbeResult {
+    fun probe(s: VgServer): ProbeResult = attempt(s.host, s.port, s.ip, s.host)
+
+    /**
+     * For a shared account. With a custom SNI it first tries the handshake carrying that
+     * name (what the channel suggests for getting past the filter), then the plain one.
+     * The certificate chain and the real host name are checked in both cases, exactly
+     * like the client does on connect, so "OK" here means the real connection can work.
+     */
+    fun probeAccount(host: String, port: Int, sni: String): ProbeResult {
+        if (sni.isNotBlank() && sni != host) {
+            val withSni = attempt(host, port, "", sni)
+            if (withSni.state == ProbeState.OK) return withSni.copy(useSni = true)
+            val plain = attempt(host, port, "", host)
+            return if (plain.state == ProbeState.OK) plain else withSni
+        }
+        return attempt(host, port, "", host)
+    }
+
+    private fun attempt(host: String, port: Int, ip: String, sniName: String): ProbeResult {
         val start = SystemClock.elapsedRealtime()
         var viaIp = false
         val raw = Socket()
 
         try {
             val address = try {
-                InetAddress.getByName(s.host)
+                InetAddress.getByName(host)
             } catch (e: UnknownHostException) {
-                if (s.ip.isBlank()) return fail("dns")
+                if (ip.isBlank()) return fail("dns")
                 viaIp = true
-                InetAddress.getByName(s.ip)
+                InetAddress.getByName(ip)
             }
 
-            raw.connect(InetSocketAddress(address, s.port), CONNECT_TIMEOUT)
+            raw.connect(InetSocketAddress(address, port), CONNECT_TIMEOUT)
             raw.soTimeout = READ_TIMEOUT
 
             val ssl = SSLContext.getDefault().socketFactory
-                .createSocket(raw, s.host, s.port, true) as SSLSocket
+                .createSocket(raw, host, port, true) as SSLSocket
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 ssl.sslParameters = ssl.sslParameters.also {
-                    it.serverNames = listOf(SNIHostName(s.host))
+                    it.serverNames = listOf(SNIHostName(sniName))
                 }
             }
 
@@ -61,14 +79,14 @@ internal object VgProbe {
                 return fail(if (hasCertCause(e)) "cert" else "tls reset")
             }
 
-            if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(s.host, ssl.session)) {
+            if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(host, ssl.session)) {
                 return fail("cert")
             }
 
             val request = arrayOf(
                 "SSTP_DUPLEX_POST /sra_{BA195980-CD49-458b-9E23-C84EE0ADCD75}/ HTTP/1.1",
                 "Content-Length: 18446744073709551615",
-                "Host: ${s.host}",
+                "Host: $host",
                 "SSTPCORRELATIONID: {${UUID.randomUUID()}}"
             ).joinToString("\r\n", postfix = "\r\n\r\n")
 

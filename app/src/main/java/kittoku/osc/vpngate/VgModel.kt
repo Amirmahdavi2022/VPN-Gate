@@ -25,6 +25,7 @@ internal data class ProbeResult(
     val state: ProbeState,
     val ms: Int = -1,
     val viaIp: Boolean = false,   // DNS for the hostname failed, the raw IP worked
+    val useSni: Boolean = false,  // shared account: only the custom SNI got through
     val reason: String = "",
 )
 

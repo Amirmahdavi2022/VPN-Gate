@@ -3,6 +3,8 @@ package kittoku.osc.fragment
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
@@ -13,7 +15,9 @@ import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
@@ -31,11 +35,13 @@ import kittoku.osc.preference.toastInvalidSetting
 import kittoku.osc.service.ACTION_VPN_CONNECT
 import kittoku.osc.service.ACTION_VPN_DISCONNECT
 import kittoku.osc.service.SstpVpnService
+import kittoku.osc.vpngate.MyAccount
 import kittoku.osc.vpngate.ProbeState
 import kittoku.osc.vpngate.VgList
 import kittoku.osc.vpngate.VgProbe
 import kittoku.osc.vpngate.VgRotation
 import kittoku.osc.vpngate.VgRow
+import kittoku.osc.vpngate.VgServer
 import kittoku.osc.vpngate.VgSource
 import kittoku.osc.vpngate.flagOf
 import kittoku.osc.vpngate.formatSpeed
@@ -46,11 +52,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 
 private const val PROBE_LIMIT = 60          // top servers by VPN Gate score that get tested
 private const val PROBE_PARALLEL = 16
 private const val RESULTS_FRESH_MS = 10 * 60 * 1000L
+
+// shared account pasted from a channel message, kept as the raw text and parsed on load
+private const val KEY_ACCOUNT_TEXT = "_MA_TEXT"
+private const val KEY_MODE = "_VG_MODE"
+private const val MODE_ACCOUNT = "account"
 
 // small promo card at the bottom of the screen
 private const val CHANNEL = "parsv2r"
@@ -63,7 +75,14 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
     private val b get() = _b!!
 
     private lateinit var prefs: SharedPreferences
-    private val rows = mutableListOf<VgRow>()
+    private val gateRows = mutableListOf<VgRow>()
+    private val accountRows = mutableListOf<VgRow>()
+    private var account: MyAccount? = null
+    private var accountMode = false
+
+    // the list on screen: VPN Gate servers or the pasted account's servers
+    private val rows: MutableList<VgRow>
+        get() = if (accountMode) accountRows else gateRows
     private val adapter = Adapter()
 
     private var list: VgList? = null
@@ -101,6 +120,15 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
 
         b.vgConnect.setOnClickListener { onConnectClicked() }
         b.vgRefresh.setOnClickListener { refresh() }
+        b.vgPaste.setOnClickListener { pasteAccount() }
+
+        accountMode = prefs.getString(KEY_MODE, "") == MODE_ACCOUNT
+        loadAccount()
+        b.vgMode.check(if (accountMode) R.id.vgModeAccount else R.id.vgModeGate)
+        b.vgMode.addOnButtonCheckedListener { _, id, checked ->
+            if (checked) setMode(id == R.id.vgModeAccount)
+        }
+        applyModeUi()
 
         b.vgChannelText.text = CHANNEL_LINE
         b.vgChannelHandle.text = "@$CHANNEL"
@@ -129,6 +157,11 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
             return
         }
 
+        if (accountMode && account == null) {
+            pasteAccount()
+            return
+        }
+
         if (probeJob?.isActive == true || loadJob?.isActive == true) {
             connectAfterProbe = true
             setStatus("Finding a working server…", "Will connect as soon as one passes")
@@ -143,7 +176,7 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
         }
 
         connectAfterProbe = true
-        if (rows.isEmpty()) loadList(thenProbe = true) else probeAll()
+        if (rows.isEmpty() && !accountMode) loadList(thenProbe = true) else probeAll()
     }
 
     private fun refresh() {
@@ -152,23 +185,29 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
             return
         }
         connectAfterProbe = false
-        loadList(thenProbe = true)
+        if (accountMode) {
+            if (account == null) pasteAccount() else probeAll()
+        } else {
+            loadList(thenProbe = true)
+        }
     }
 
     private fun loadList(thenProbe: Boolean) {
         if (loadJob?.isActive == true) return
         probeJob?.cancel()
 
-        if (rows.isEmpty()) setStatus("Getting server list…", "")
-        b.vgProgress.isIndeterminate = true
-        b.vgProgress.visibility = View.VISIBLE
+        if (!accountMode) {
+            if (gateRows.isEmpty()) setStatus("Getting server list…", "")
+            b.vgProgress.isIndeterminate = true
+            b.vgProgress.visibility = View.VISIBLE
+        }
 
         loadJob = viewLifecycleOwner.lifecycleScope.launch {
             val fetched = withContext(Dispatchers.IO) { VgSource.fetch(requireContext().applicationContext) }
-            b.vgProgress.visibility = View.INVISIBLE
+            if (!accountMode) b.vgProgress.visibility = View.INVISIBLE
 
             if (fetched == null || fetched.servers.isEmpty()) {
-                if (rows.isEmpty()) {
+                if (gateRows.isEmpty() && !accountMode) {
                     setStatus("Couldn't get the server list", "Check your connection and tap Refresh")
                 }
                 connectAfterProbe = false
@@ -176,14 +215,15 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
             }
 
             fill(fetched)
-            if (thenProbe) probeAll() else renderState()
+            if (thenProbe && !accountMode) probeAll() else renderState()
         }
     }
 
     private fun fill(newList: VgList) {
         list = newList
-        rows.clear()
-        newList.servers.take(PROBE_LIMIT).forEach { rows.add(VgRow(it)) }
+        gateRows.clear()
+        newList.servers.take(PROBE_LIMIT).forEach { gateRows.add(VgRow(it)) }
+        if (accountMode) return
         lastProbeAt = 0L
 
         if (animateNextFill) {
@@ -202,10 +242,12 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
         }
 
         probeJob?.cancel()
-        rows.forEach { it.result = it.result.copy(state = ProbeState.IDLE, reason = "") }
+        val target = rows
+        val acc = if (accountMode) account else null
+        target.forEach { it.result = it.result.copy(state = ProbeState.IDLE, reason = "") }
         adapter.notifyDataSetChanged()
 
-        val total = rows.size
+        val total = target.size
         var done = 0
         var ok = 0
         b.vgProgress.isIndeterminate = false
@@ -214,7 +256,7 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
         b.vgProgress.visibility = View.VISIBLE
         setStatus("Testing servers on your network…", "0 / $total")
 
-        val snapshot = rows.toList()
+        val snapshot = target.toList()
         probeJob = viewLifecycleOwner.lifecycleScope.launch {
             val gate = Semaphore(PROBE_PARALLEL)
             coroutineScope {
@@ -224,7 +266,10 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
                             row.result = row.result.copy(state = ProbeState.TESTING)
                             notifyRow(row)
 
-                            row.result = withContext(Dispatchers.IO) { VgProbe.probe(row.server) }
+                            row.result = withContext(Dispatchers.IO) {
+                                if (acc != null) VgProbe.probeAccount(row.server.host, row.server.port, acc.sni)
+                                else VgProbe.probe(row.server)
+                            }
 
                             done += 1
                             if (row.result.state == ProbeState.OK) ok += 1
@@ -237,7 +282,7 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
             }
 
             // fastest working first, then the rest by VPN Gate's own score
-            rows.sortWith(compareBy<VgRow>(
+            target.sortWith(compareBy<VgRow>(
                 { if (it.result.state == ProbeState.OK) 0 else 1 },
                 { if (it.result.state == ProbeState.OK) it.result.ms else 0 },
                 { -it.server.score },
@@ -248,9 +293,15 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
             lastProbeAt = SystemClock.elapsedRealtime()
             b.vgProgress.visibility = View.INVISIBLE
 
-            val best = rows.firstOrNull { it.result.state == ProbeState.OK }
+            val best = target.firstOrNull { it.result.state == ProbeState.OK }
             if (best == null) {
                 connectAfterProbe = false
+                val certOnly = acc != null && target.all { it.result.reason == "cert" }
+                if (certOnly) {
+                    setStatus("The servers answered, but their certificate didn't check out",
+                        "Not connecting, so nobody can read your traffic in between")
+                    return@launch
+                }
                 setStatus("No server got through right now", "Try again in a few minutes, or switch between Wi-Fi and mobile data")
                 return@launch
             }
@@ -268,8 +319,14 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
     private fun connectFrom(first: VgRow) {
         val working = rows.filter { it.result.state == ProbeState.OK }
         val ordered = listOf(first) + working.filter { it !== first }
+        val acc = if (accountMode) account else null
         val targets = ordered.map {
-            VgRotation.Target(it.server.host, it.server.port, it.server.ip, it.result.viaIp)
+            if (acc != null) {
+                VgRotation.Target(it.server.host, it.server.port, "", false,
+                    acc.username, acc.password, if (it.result.useSni) acc.sni else "")
+            } else {
+                VgRotation.Target(it.server.host, it.server.port, it.server.ip, it.result.viaIp)
+            }
         }
         VgRotation.start(prefs, targets)
 
@@ -304,6 +361,103 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
         }
     }
 
+    // ---------------------------------------------------------------- shared account
+
+    private fun setMode(toAccount: Boolean) {
+        if (toAccount == accountMode) return
+        probeJob?.cancel()
+        connectAfterProbe = false
+        lastProbeAt = 0L
+        accountMode = toAccount
+        prefs.edit().putString(KEY_MODE, if (toAccount) MODE_ACCOUNT else "gate").apply()
+        applyModeUi()
+    }
+
+    private fun applyModeUi() {
+        val binding = _b ?: return
+        binding.vgTitle.text = if (accountMode) "MY ACCOUNT · SSTP" else "VPN GATE · SSTP"
+        binding.vgPaste.visibility = if (accountMode) View.VISIBLE else View.GONE
+        binding.vgRefresh.text = if (accountMode) "Test" else "Refresh & test"
+        binding.vgProgress.visibility = View.INVISIBLE
+        adapter.notifyDataSetChanged()
+        renderUpdated()
+        renderState()
+    }
+
+    private fun loadAccount() {
+        val text = prefs.getString(KEY_ACCOUNT_TEXT, null)
+        account = text?.let { MyAccount.parse(it) }
+        accountRows.clear()
+        account?.hosts?.forEach { h ->
+            val cc = MyAccount.countryOf(h.host)
+            val country = if (cc.isEmpty()) "" else Locale("", cc).getDisplayCountry(Locale.ENGLISH)
+            accountRows.add(VgRow(VgServer(h.host, h.port, "", cc, country, 0L, 0, 0L, 0)))
+        }
+    }
+
+    /** Takes the account straight from the clipboard; falls back to a box to paste into. */
+    private fun pasteAccount() {
+        if (isOn) {
+            Toast.makeText(requireContext(), "Disconnect first", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val clip = (requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
+            ?.primaryClip?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)?.coerceToText(requireContext())?.toString().orEmpty()
+
+        if (MyAccount.parse(clip) != null) {
+            saveAccount(clip)
+            return
+        }
+
+        val input = EditText(requireContext()).also {
+            it.hint = "Host names, Username, Password, SNI…"
+            it.minLines = 6
+            it.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            it.setText(clip)
+        }
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = android.widget.FrameLayout(requireContext()).also {
+            it.setPadding(pad, pad / 2, pad, 0)
+            it.addView(input)
+        }
+
+        AlertDialog.Builder(requireContext())
+            .setTitle("Paste the account message")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val text = input.text.toString()
+                if (MyAccount.parse(text) == null) {
+                    Toast.makeText(requireContext(),
+                        "Couldn't find host names plus a username and password in that text",
+                        Toast.LENGTH_LONG).show()
+                } else {
+                    saveAccount(text)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun saveAccount(text: String) {
+        prefs.edit().putString(KEY_ACCOUNT_TEXT, text).apply()
+        loadAccount()
+        val a = account ?: return
+        Toast.makeText(requireContext(),
+            "${a.hosts.size} servers · ${a.username}" + if (a.sni.isNotBlank()) " · SNI ${a.sni}" else "",
+            Toast.LENGTH_LONG).show()
+
+        if (!accountMode) {
+            b.vgMode.check(R.id.vgModeAccount)   // listener switches the mode
+        } else {
+            lastProbeAt = 0L
+            b.vgList.scheduleLayoutAnimation()
+            applyModeUi()
+        }
+        probeAll()
+    }
+
     // ---------------------------------------------------------------- rendering
 
     private fun renderState() {
@@ -313,17 +467,23 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
             binding.vgConnect.text = "Disconnect"
             val t = VgRotation.current(prefs)
             if (t != null) {
-                val row = rows.firstOrNull { it.server.host == t.host }
+                val row = (gateRows + accountRows).firstOrNull { it.server.host == t.host }
                 val where = row?.let { "${flagOf(it.server.cc)} ${it.server.country}" } ?: ""
                 val backups = VgRotation.remaining(prefs)
-                setStatus("VPN on", listOf(where, t.host, if (backups > 0) "$backups backups ready" else "")
-                    .filter { it.isNotBlank() }.joinToString("  ·  "))
+                setStatus("VPN on", listOf(
+                    where,
+                    t.host,
+                    if (t.sni.isNotBlank()) "SNI ${t.sni}" else "",
+                    if (backups > 0) "$backups backups ready" else "",
+                ).filter { it.isNotBlank() }.joinToString("  ·  "))
             } else {
                 setStatus("VPN on", "Using the server from the HOME tab")
             }
         } else {
-            binding.vgConnect.text = "Quick connect"
-            if (probeJob?.isActive != true && loadJob?.isActive != true) {
+            binding.vgConnect.text = if (accountMode && account == null) "Paste account" else "Quick connect"
+            if (accountMode && account == null) {
+                setStatus("No account yet", "Copy the account message from Telegram, then tap Paste account")
+            } else if (probeJob?.isActive != true && (accountMode || loadJob?.isActive != true)) {
                 val ok = rows.count { it.result.state == ProbeState.OK }
                 if (lastProbeAt > 0 && ok > 0) {
                     setStatus("$ok servers work for you", "Tap Quick connect, or pick one below")
@@ -335,6 +495,14 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
     }
 
     private fun renderUpdated() {
+        if (accountMode) {
+            val a = account
+            b.vgUpdated.text = if (a == null) "" else listOf(
+                a.username,
+                if (a.sni.isNotBlank()) "SNI ${a.sni}" else "",
+            ).filter { it.isNotBlank() }.joinToString("  ·  ")
+            return
+        }
         val l = list ?: return
         val text = if (l.updatedAt > 0) {
             val mins = ((System.currentTimeMillis() / 1000 - l.updatedAt) / 60).coerceAtLeast(0)
@@ -383,7 +551,7 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
                 s.country,
                 if (s.sessions > 0) "${s.sessions} users" else "",
                 formatSpeed(s.speed),
-            ).filter { it.isNotBlank() }.joinToString("  ·  ")
+            ).filter { it.isNotBlank() }.joinToString("  ·  ").ifEmpty { "SSTP" }
 
             val r = row.result
             when (r.state) {
@@ -395,7 +563,7 @@ class VpnGateFragment : Fragment(R.layout.fragment_vpngate) {
                     holder.v.vgResult.setTextColor(ContextCompat.getColor(ctx, R.color.vg_bad))
                 }
                 ProbeState.OK -> {
-                    holder.v.vgResult.text = "${r.ms} ms"
+                    holder.v.vgResult.text = if (r.useSni) "${r.ms} ms · SNI" else "${r.ms} ms"
                     val color = when {
                         r.ms < 700 -> R.color.vg_ok
                         r.ms < 1500 -> R.color.vg_mid

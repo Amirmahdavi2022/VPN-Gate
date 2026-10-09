@@ -1,6 +1,7 @@
 package kittoku.osc.vpngate
 
 import android.content.SharedPreferences
+import android.util.Base64
 import kittoku.osc.preference.OscPrefKey
 import kittoku.osc.preference.accessor.getStringPrefValue
 import kittoku.osc.preference.accessor.setBooleanPrefValue
@@ -23,18 +24,44 @@ internal object VgRotation {
     private const val VG_USER = "vpn"
     private const val VG_PASS = "vpn"
 
-    internal data class Target(val host: String, val port: Int, val ip: String, val viaIp: Boolean) {
+    /**
+     * One server to try. [username]/[password] are null for VPN Gate servers (their public
+     * vpn/vpn login); a shared account carries its own, plus an optional custom SNI.
+     */
+    internal data class Target(
+        val host: String,
+        val port: Int,
+        val ip: String,
+        val viaIp: Boolean,
+        val username: String? = null,
+        val password: String? = null,
+        val sni: String = "",
+    ) {
         val connectHost: String
             get() = if (viaIp && ip.isNotBlank()) ip else host
 
-        fun encode() = listOf(host, port.toString(), ip, if (viaIp) "1" else "0").joinToString("|")
+        val isAccount: Boolean
+            get() = username != null
+
+        fun encode(): String {
+            val base = listOf(host, port.toString(), ip, if (viaIp) "1" else "0")
+            if (!isAccount) return base.joinToString("|")
+            return (base + listOf(b64(username!!), b64(password ?: ""), b64(sni))).joinToString("|")
+        }
 
         companion object {
             fun decode(s: String): Target? {
                 val p = s.split('|')
-                if (p.size != 4) return null
-                return Target(p[0], p[1].toIntOrNull() ?: return null, p[2], p[3] == "1")
+                if (p.size != 4 && p.size != 7) return null
+                val port = p[1].toIntOrNull() ?: return null
+                if (p.size == 4) return Target(p[0], port, p[2], p[3] == "1")
+                return Target(p[0], port, p[2], p[3] == "1", unb64(p[4]), unb64(p[5]), unb64(p[6]))
             }
+
+            private fun b64(s: String) = Base64.encodeToString(s.toByteArray(), Base64.NO_WRAP)
+            private fun unb64(s: String) = try {
+                String(Base64.decode(s, Base64.NO_WRAP))
+            } catch (_: IllegalArgumentException) { "" }
         }
     }
 
@@ -80,19 +107,27 @@ internal object VgRotation {
         return raw.lines().mapNotNull { Target.decode(it) }
     }
 
-    /** Fills in exactly what users otherwise type by hand from the VPN Gate site. */
+    /** Fills in exactly what users otherwise type by hand. */
     private fun apply(prefs: SharedPreferences, t: Target) {
         setStringPrefValue(t.connectHost, OscPrefKey.HOME_HOSTNAME, prefs)
         setIntPrefValue(t.port, OscPrefKey.SSL_PORT, prefs)
-        setStringPrefValue(VG_USER, OscPrefKey.HOME_USERNAME, prefs)
-        setStringPrefValue(VG_PASS, OscPrefKey.HOME_PASSWORD, prefs)
+        setStringPrefValue(t.username ?: VG_USER, OscPrefKey.HOME_USERNAME, prefs)
+        setStringPrefValue(t.password ?: VG_PASS, OscPrefKey.HOME_PASSWORD, prefs)
 
-        // normal case: connect by name, full hostname check.
-        // DNS-failed case: connect by IP, send the real name as SNI; the certificate chain
-        // is still validated, only the name match is skipped because we dialled an IP.
-        setBooleanPrefValue(!t.viaIp, OscPrefKey.SSL_DO_VERIFY, prefs)
-        setBooleanPrefValue(t.viaIp, OscPrefKey.SSL_DO_USE_CUSTOM_SNI, prefs)
-        if (t.viaIp) setStringPrefValue(t.host, OscPrefKey.SSL_CUSTOM_SNI, prefs)
+        if (t.isAccount) {
+            // shared account: always dial the real name and check the certificate against it.
+            // The custom SNI only changes the name the filter sees in the handshake.
+            setBooleanPrefValue(true, OscPrefKey.SSL_DO_VERIFY, prefs)
+            setBooleanPrefValue(t.sni.isNotBlank(), OscPrefKey.SSL_DO_USE_CUSTOM_SNI, prefs)
+            if (t.sni.isNotBlank()) setStringPrefValue(t.sni, OscPrefKey.SSL_CUSTOM_SNI, prefs)
+        } else {
+            // normal case: connect by name, full hostname check.
+            // DNS-failed case: connect by IP, send the real name as SNI; the certificate chain
+            // is still validated, only the name match is skipped because we dialled an IP.
+            setBooleanPrefValue(!t.viaIp, OscPrefKey.SSL_DO_VERIFY, prefs)
+            setBooleanPrefValue(t.viaIp, OscPrefKey.SSL_DO_USE_CUSTOM_SNI, prefs)
+            if (t.viaIp) setStringPrefValue(t.host, OscPrefKey.SSL_CUSTOM_SNI, prefs)
+        }
 
         setBooleanPrefValue(false, OscPrefKey.SSL_DO_SPECIFY_CERT, prefs)
         setBooleanPrefValue(false, OscPrefKey.PROXY_DO_USE_PROXY, prefs)
